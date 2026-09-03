@@ -1,0 +1,395 @@
+{
+  "name": "Image Task Runner - API Test Suite",
+  "base_url": "http://127.0.0.1:8000",
+  "notes": [
+    "Replace input_path with an image that exists on the machine running the FastAPI service.",
+    "The submit_all_operations case exercises all five image operations and dependency handling.",
+    "Other cases exercise circular dependencies, failed dependencies, cancellation, priorities/concurrency, retries, status, and stats.",
+    "Each case is an HTTP request specification; it is intended to be run through Swagger (/docs), Postman, curl, or a CLI test runner."
+  ],
+  "cases": [
+    {
+      "id": "submit_all_operations",
+      "purpose": "Run all five image operations with dependencies.",
+      "method": "POST",
+      "path": "/submit",
+      "body": {
+        "tasks": [
+          {
+            "name": "resize",
+            "operation": "resize",
+            "input_path": "input/sample.jpg",
+            "output_path": "output/01_resize.jpg",
+            "params": {
+              "width": 1200,
+              "height": 800
+            },
+            "priority": "normal"
+          },
+          {
+            "name": "compress",
+            "operation": "compress",
+            "input_path": "input/sample.jpg",
+            "output_path": "output/02_compress.jpg",
+            "params": {
+              "quality": 60
+            },
+            "priority": "normal"
+          },
+          {
+            "name": "filter",
+            "operation": "filter",
+            "input_path": "input/sample.jpg",
+            "output_path": "output/03_filter.png",
+            "params": {
+              "filter": "grayscale"
+            },
+            "priority": "normal"
+          },
+          {
+            "name": "watermark",
+            "operation": "watermark",
+            "output_path": "output/04_watermark.png",
+            "params": {
+              "text": "Image Task Runner",
+              "opacity": 150
+            },
+            "depends_on": ["resize"],
+            "priority": "urgent"
+          },
+          {
+            "name": "thumbnail",
+            "operation": "thumbnail",
+            "output_path": "output/05_thumbnail.jpg",
+            "params": {
+              "size": 256
+            },
+            "depends_on": ["resize", "compress"],
+            "priority": "background"
+          }
+        ]
+      },
+      "expected": {
+        "status_code": 202,
+        "result": "Five task IDs are returned."
+      }
+    },
+    {
+      "id": "circular_dependency",
+      "purpose": "Reject a circular dependency at submission time.",
+      "method": "POST",
+      "path": "/submit",
+      "body": {
+        "tasks": [
+          {
+            "name": "task_a",
+            "operation": "resize",
+            "input_path": "input/sample.jpg",
+            "output_path": "output/a.jpg",
+            "params": {
+              "width": 800,
+              "height": 600
+            },
+            "depends_on": ["task_b"]
+          },
+          {
+            "name": "task_b",
+            "operation": "thumbnail",
+            "output_path": "output/b.jpg",
+            "params": {
+              "size": 200
+            },
+            "depends_on": ["task_a"]
+          }
+        ]
+      },
+      "expected": {
+        "status_code": 400,
+        "detail_contains": "circular dependency"
+      }
+    },
+    {
+      "id": "failed_dependency",
+      "purpose": "A downstream task must become BLOCKED when its dependency fails.",
+      "method": "POST",
+      "path": "/submit",
+      "body": {
+        "tasks": [
+          {
+            "name": "bad_resize",
+            "operation": "resize",
+            "input_path": "input/does-not-exist.jpg",
+            "output_path": "output/bad_resize.jpg",
+            "params": {
+              "width": 800,
+              "height": 600
+            }
+          },
+          {
+            "name": "blocked_watermark",
+            "operation": "watermark",
+            "output_path": "output/blocked.png",
+            "params": {
+              "text": "Should be blocked"
+            },
+            "depends_on": ["bad_resize"]
+          }
+        ]
+      },
+      "expected": {
+        "bad_resize_state": "FAILED",
+        "blocked_watermark_state": "BLOCKED"
+      }
+    },
+    {
+      "id": "cancel_cascade",
+      "purpose": "Cancel a task and all of its dependents.",
+      "method": "POST",
+      "path": "/submit",
+      "body": {
+        "tasks": [
+          {
+            "name": "cancel_root",
+            "operation": "resize",
+            "input_path": "input/sample.jpg",
+            "output_path": "output/cancel_root.jpg",
+            "params": {
+              "width": 1000,
+              "height": 700
+            }
+          },
+          {
+            "name": "cancel_child",
+            "operation": "watermark",
+            "output_path": "output/cancel_child.png",
+            "params": {
+              "text": "Cancelled"
+            },
+            "depends_on": ["cancel_root"]
+          },
+          {
+            "name": "cancel_grandchild",
+            "operation": "thumbnail",
+            "output_path": "output/cancel_grandchild.jpg",
+            "params": {
+              "size": 200
+            },
+            "depends_on": ["cancel_child"]
+          }
+        ]
+      },
+      "follow_up": {
+        "method": "POST",
+        "path_template": "/cancel/{cancel_root_task_id}"
+      },
+      "expected": {
+        "cancel_root": "CANCELLED",
+        "cancel_child": "CANCELLED",
+        "cancel_grandchild": "CANCELLED"
+      }
+    },
+    {
+      "id": "priority_and_concurrency",
+      "purpose": "Exercise urgent, normal, and background priorities.",
+      "method": "POST",
+      "path": "/submit",
+      "body": {
+        "tasks": [
+          {
+            "name": "background_task",
+            "operation": "resize",
+            "input_path": "input/sample.jpg",
+            "output_path": "output/background.jpg",
+            "params": {
+              "width": 500,
+              "height": 500
+            },
+            "priority": "background"
+          },
+          {
+            "name": "normal_task",
+            "operation": "compress",
+            "input_path": "input/sample.jpg",
+            "output_path": "output/normal.jpg",
+            "params": {
+              "quality": 70
+            },
+            "priority": "normal"
+          },
+          {
+            "name": "urgent_task",
+            "operation": "thumbnail",
+            "input_path": "input/sample.jpg",
+            "output_path": "output/urgent.jpg",
+            "params": {
+              "size": 128
+            },
+            "priority": "urgent"
+          }
+        ]
+      },
+      "follow_up": {
+        "method": "GET",
+        "path": "/stats"
+      },
+      "expected": {
+        "result": "Urgent tasks are selected before normal and background tasks when workers become available.",
+        "concurrency": "active_workers must never exceed concurrency_limit."
+      }
+    },
+    {
+      "id": "retry",
+      "purpose": "Exercise retry count and exponential backoff.",
+      "method": "POST",
+      "path": "/submit",
+      "body": {
+        "tasks": [
+          {
+            "name": "retry_task",
+            "operation": "resize",
+            "input_path": "input/does-not-exist.jpg",
+            "output_path": "output/retry.jpg",
+            "params": {
+              "width": 800,
+              "height": 600
+            },
+            "max_retries": 2
+          }
+        ]
+      },
+      "expected": {
+        "state": "FAILED",
+        "retry_count": 2,
+        "behavior": "The task retries with exponential delays before final failure."
+      }
+    },
+    {
+      "id": "status",
+      "purpose": "Check task state and retry count.",
+      "method": "GET",
+      "path_template": "/status/{task_id}",
+      "expected": {
+        "fields": [
+          "task_id",
+          "name",
+          "state",
+          "retry_count",
+          "max_retries",
+          "error",
+          "output_path",
+          "priority"
+        ]
+      }
+    },
+    {
+      "id": "stats",
+      "purpose": "Check running versus waiting tasks and terminal states.",
+      "method": "GET",
+      "path": "/stats",
+      "expected": {
+        "fields": [
+          "running",
+          "waiting",
+          "success",
+          "failed",
+          "blocked",
+          "cancelled",
+          "concurrency_limit",
+          "active_workers"
+        ]
+      }
+    },
+    {
+      "id": "unknown_task",
+      "purpose": "Verify status and cancellation of an unknown task.",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/status/not-a-real-task-id",
+          "expected_status": 404
+        },
+        {
+          "method": "POST",
+          "path": "/cancel/not-a-real-task-id",
+          "expected_status": 404
+        }
+      ]
+    },
+    {
+      "id": "all_filters",
+      "purpose": "Exercise the supported filter variants.",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/submit",
+          "body": {
+            "tasks": [
+              {
+                "name": "grayscale",
+                "operation": "filter",
+                "input_path": "input/sample.jpg",
+                "output_path": "output/filter_grayscale.png",
+                "params": {
+                  "filter": "grayscale"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/submit",
+          "body": {
+            "tasks": [
+              {
+                "name": "blur",
+                "operation": "filter",
+                "input_path": "input/sample.jpg",
+                "output_path": "output/filter_blur.png",
+                "params": {
+                  "filter": "blur",
+                  "radius": 3
+                }
+              }
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/submit",
+          "body": {
+            "tasks": [
+              {
+                "name": "sharpen",
+                "operation": "filter",
+                "input_path": "input/sample.jpg",
+                "output_path": "output/filter_sharpen.png",
+                "params": {
+                  "filter": "sharpen"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/submit",
+          "body": {
+            "tasks": [
+              {
+                "name": "brightness",
+                "operation": "filter",
+                "input_path": "input/sample.jpg",
+                "output_path": "output/filter_brightness.png",
+                "params": {
+                  "filter": "brightness",
+                  "factor": 1.25
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
